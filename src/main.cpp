@@ -19,6 +19,8 @@ Adafruit_BMP085 bmp;
 TinyGPSPlus gps;
 HardwareSerial neo6m(2);
 
+void loadConfig();
+
 // Configuration Structure
 struct Config {
   char ssid[32] = "Aspol Tracker";
@@ -31,20 +33,6 @@ Config currentConfig;
 bool sdCardAvailable = false;
 bool rtcInitialized = false;
 bool bmpInitialized = false;
-
-// Function Prototypes
-void initRTC();
-void initBMP();
-bool initSDCard();
-void loadConfig();
-void saveConfig();
-void setupWiFi();
-void setupWebServer();
-void handleRoot();
-void handleConfig();
-void logGPSData(float pressure);
-void processGPS();
-void checkPressureAndLog();
 
 void initRTC() {
   Wire.begin();
@@ -86,7 +74,6 @@ void loadConfig() {
   File configFile = SD.open("/config.txt", FILE_READ);
   if (!configFile) return;
 
-  // Simple config parsing (minimal error handling)
   String ssid = configFile.readStringUntil('\n');
   String password = configFile.readStringUntil('\n');
   String deviceName = configFile.readStringUntil('\n');
@@ -138,13 +125,24 @@ void handleRoot() {
   // Time
   if (rtcInitialized) {
     DateTime now = rtc.now();
-    html += "<tr><th>Time</th><td>" + 
+    int second = now.second();
+    String secondStr = second < 10 ? "0" + String(second) : String(second);
+    int minute = now.minute();
+    String minuteStr = minute < 10 ? "0" + String(minute) : String(minute);
+    int hour = now.hour();
+    String hourStr = hour < 10 ? "0" + String(hour) : String(hour);
+    int day = now.day();
+    String dayStr = day < 10 ? "0" + String(day) : String(day);
+    int month = now.month();
+    String monthStr = month < 10 ? "0" + String(month) : String(month);
+    
+    html += "<tr><th>Current Time</th><td>" + 
             String(now.year()) + "-" + 
-            String(now.month()) + "-" + 
-            String(now.day()) + " " + 
-            String(now.hour()) + ":" + 
-            String(now.minute()) + ":" + 
-            String(now.second()) + "</td></tr>";
+            monthStr + "-" + 
+            dayStr + " " + 
+            hourStr + ":" + 
+            minuteStr + ":" + 
+            secondStr + "</td></tr>";
   } else {
     html += "<tr><th>Time</th><td>RTC Not Initialized</td></tr>";
   }
@@ -168,10 +166,17 @@ void handleRoot() {
   } else {
     html += "No Valid GPS Data";
   }
-  html += "</td></tr>";
-  html += "</table>";
+  html += "</td></tr></table>";
 
-  // Configuration Section
+  // RTC Configuration Section
+  html += "<h2>RTC Configuration</h2>";
+  html += "<form method='POST' action='/datetime'>";
+  html += "<table>";
+  html += "<tr><th>Set Date & Time</th><td><input type='datetime-local' name='datetime' required></td></tr>";
+  html += "<tr><td colspan='2'><input type='submit' value='Update DateTime'></td></tr>";
+  html += "</table></form>";
+
+  // Device Configuration Section
   html += "<h2>Device Configuration</h2>";
   html += "<form method='POST' action='/config'>";
   html += "<table>";
@@ -205,6 +210,26 @@ void handleConfig() {
     server.sendHeader("Location", "/");
     server.send(303);
   }
+}
+
+void handleDateTime() {
+  if (server.method() == HTTP_POST && rtcInitialized) {
+    String dateTimeStr = server.arg("datetime");
+    // Format expected: YYYY-MM-DDTHH:mm
+    // Example: 2024-01-08T15:30
+    
+    int year = dateTimeStr.substring(0, 4).toInt();
+    int month = dateTimeStr.substring(5, 7).toInt();
+    int day = dateTimeStr.substring(8, 10).toInt();
+    int hour = dateTimeStr.substring(11, 13).toInt();
+    int minute = dateTimeStr.substring(14, 16).toInt();
+    
+    DateTime newDateTime(year, month, day, hour, minute, 0);
+    rtc.adjust(newDateTime);
+  }
+  
+  server.sendHeader("Location", "/");
+  server.send(303);
 }
 
 void logGPSData(float pressure) {
@@ -254,6 +279,7 @@ void setup() {
   setupWiFi();
   server.on("/", handleRoot);
   server.on("/config", handleConfig);
+  server.on("/datetime", handleDateTime);
   server.begin();
 }
 
