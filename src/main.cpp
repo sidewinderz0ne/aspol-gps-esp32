@@ -32,6 +32,7 @@ TinyGPSPlus gps;
 HardwareSerial neo6m(2);
 void checkPressureAndLog();
 void handlePressure();
+void handleTimeTemp();
 
 // Optimized circular buffer for serial messages
 struct LogMessage
@@ -346,15 +347,16 @@ void handleDateTime()
     server.send(303);
 }
 
-void handleRoot() {
+void handleRoot()
+{
     String html;
     html.reserve(4096);
-    
+
     // HTML Start and Head
     html = "<!DOCTYPE html><html><head>";
     html += "<meta charset='utf-8'>";
     html += "<title>Aspol Tracker</title>";
-    
+
     // CSS Styles
     html += "<style>";
     html += "body {";
@@ -452,6 +454,16 @@ void handleRoot() {
     html += "}";
     html += "setInterval(updateData, 1000);";
     html += "document.addEventListener('DOMContentLoaded', updateData);";
+    html += "function updateTimeAndTemp() {";
+    html += "    fetch('/timeTemp')"; // Endpoint for time and temperature
+    html += "        .then(response => response.json())";
+    html += "        .then(data => {";
+    html += "            document.getElementById('time').textContent = data.time;";
+    html += "            document.getElementById('temperature').textContent = data.temperature.toFixed(2) + ' °C';";
+    html += "        });";
+    html += "}";
+    html += "setInterval(updateTimeAndTemp, 1000);";                             // Update every 1 second
+    html += "document.addEventListener('DOMContentLoaded', updateTimeAndTemp);"; // Initial call
     html += "</script>";
     html += "</head>";
 
@@ -472,35 +484,44 @@ void handleRoot() {
     // Device Status Section
     html += "<div class='status-card'>";
     html += "<h2>Device Status</h2><table>";
-    
+
     // Time Status
-    if (rtcInitialized) {
+    if (rtcInitialized)
+    {
         DateTime now = rtc.now();
         char timeStr[30];
-        snprintf(timeStr, sizeof(timeStr), "%04d-%02d-%02d %02d:%02d:%02d", 
-                now.year(), now.month(), now.day(), 
-                now.hour(), now.minute(), now.second());
-        html += "<tr><th>Current Time</th><td>" + String(timeStr) + "</td></tr>";
-    } else {
+        snprintf(timeStr, sizeof(timeStr), "%04d-%02d-%02d %02d:%02d:%02d",
+                 now.year(), now.month(), now.day(),
+                 now.hour(), now.minute(), now.second());
+        html += "<tr><th>Current Time</th><td><span id='time'>Loading...</span></div></td></tr>";
+    }
+    else
+    {
         html += "<tr><th>Time</th><td>RTC Not Initialized</td></tr>";
     }
 
     // Temperature Status
-    if (bmpInitialized) {
-        html += "<tr><th>Temperature</th><td>" + String(bmp.readTemperature()) + " °C</td></tr>";
-    } else {
+    if (bmpInitialized)
+    {
+        html += "<tr><th>Temperature</th><td><span id='temperature'>Loading...</span></div></td></tr>";
+    }
+    else
+    {
         html += "<tr><th>Temperature</th><td>BMP Not Initialized</td></tr>";
     }
 
     // GPS Status
     html += "<tr><th>GPS Status</th><td>";
-    if (gps.location.isValid()) {
+    if (gps.location.isValid())
+    {
         char gpsStr[100];
         snprintf(gpsStr, sizeof(gpsStr), "Lat: %.6f, Lng: %.6f, Speed: %.1f km/h, Satellites: %d",
-                gps.location.lat(), gps.location.lng(), 
-                gps.speed.kmph(), gps.satellites.value());
+                 gps.location.lat(), gps.location.lng(),
+                 gps.speed.kmph(), gps.satellites.value());
         html += gpsStr;
-    } else {
+    }
+    else
+    {
         html += "No Valid GPS Data";
     }
     html += "</td></tr></table></div>";
@@ -532,13 +553,13 @@ void handleRoot() {
     html += "<tr><th>SSID</th><td><input type='text' name='ssid' value='" + String(currentConfig.ssid) + "'></td></tr>";
     html += "<tr><th>Password</th><td><input type='password' name='password' placeholder='Enter new password'></td></tr>";
     html += "<tr><th>Device Name</th><td><input type='text' name='deviceName' value='" + String(currentConfig.deviceName) + "'></td></tr>";
-    html += "<tr><th>Pressure Threshold (%)</th><td><input type='number' step='0.1' name='pressureThreshold' value='" + 
+    html += "<tr><th>Pressure Threshold (%)</th><td><input type='number' step='0.1' name='pressureThreshold' value='" +
             String(currentConfig.pressureThreshold) + "'></td></tr>";
     html += "<tr><td colspan='2'><input type='submit' value='Save Configuration'></td></tr></table>";
     html += "</form></div>";
 
     html += "</body></html>";
-    
+
     server.send(200, "text/html", html);
 }
 
@@ -613,6 +634,7 @@ void setup()
     server.on("/pressure", handlePressure); // Add new endpoint
     server.on("/download", handleDownload);
     server.on("/delete", handleDelete);
+    server.on("/timeTemp", handleTimeTemp);
     server.begin();
     serialPrintln("Web server started");
 }
@@ -659,6 +681,26 @@ void checkPressureAndLog()
                  pressure, averagePressure, thresholdLevel);
         serialPrintln(message);
         logGPSData(pressure);
+    }
+}
+
+void handleTimeTemp()
+{
+    if (rtcInitialized && bmpInitialized)
+    {
+        DateTime now = rtc.now();
+        float temperature = bmp.readTemperature();
+
+        String json = "{";
+        json += "\"time\":\"" + String(now.timestamp(DateTime::TIMESTAMP_TIME)) + "\",";
+        json += "\"temperature\":" + String(temperature, 2);
+        json += "}";
+
+        server.send(200, "application/json", json);
+    }
+    else
+    {
+        server.send(500, "application/json", "{\"error\":\"RTC or BMP not initialized\"}");
     }
 }
 
