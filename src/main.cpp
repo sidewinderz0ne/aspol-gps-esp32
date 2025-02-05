@@ -29,6 +29,8 @@ volatile uint16_t pulseCount = 0;
 float flowRate = 0.0;
 const float calibrationFactor = 7.5; // Adjust based on sensor specs
 
+int lastLogTime = 3000;
+
 struct FlowHistory
 {
     float readings[PRESSURE_HISTORY_SIZE];
@@ -541,10 +543,11 @@ void handleRoot()
     }
 
     // GPS Status
+    char gpsMsgWeb[100];
     html += "<tr><th>GPS Status</th><td>";
     if (gps.location.isValid()) {
-        html += "Valid Fix";
-    } else {
+        html +=html += "LAT: "+String(gps.location.lat(),6) + "| LNG:"+ String(gps.location.lng(),6)+ "| SAT:" + String(gps.satellites.value());
+    }else{
         html += "No Valid GPS Data";
     }
     html += "</td></tr></table></div>";
@@ -629,9 +632,9 @@ void processGPS()
         {
             if (gps.location.isUpdated())
             {
-                char message[80];
-                snprintf(message, sizeof(message), "GPS Updated - Satellites: %d", gps.satellites.value());
-                serialPrintln(message);
+                // char message[80];
+                // snprintf(message, sizeof(message), "GPS Updated - Satellites: %d", gps.satellites.value());
+                // serialPrintln(message);
             }
         }
     }
@@ -680,15 +683,15 @@ void checkFlowAndLog()
         addFlowReading(flowRate);
     }
     float averageFlow = calculateAverageFlow();
-    float threshold = averageFlow * (1 + currentConfig.flowThreshold / 100.0);
+    float threshold = averageFlow * (1.0 + (currentConfig.flowThreshold/100.0));
 
-    if (flowRate > threshold)
+    if (flowRate > threshold && millis() - lastLogTime > 2500 && flowRate > threshold)
     {
+        lastLogTime = millis();
         char msg[100];
-        snprintf(msg, sizeof(msg), "Flow threshold: %.2f L/min (Avg: %.2f)", flowRate, averageFlow);
+        snprintf(msg, sizeof(msg), "Flow rate: %.2f L/min (Avg: %.2f/T: %.2f)", flowRate, averageFlow,threshold);
         serialPrintln(msg);
         logGPSDataFlow(flowRate);
-        delay(4000);
     }
 }
 
@@ -842,10 +845,10 @@ void loop()
 
         if (gps.location.isValid())
         {
-            char gpsMsg[100];
-            snprintf(gpsMsg, sizeof(gpsMsg), "GPS - Lat: %.6f, Lng: %.6f, Satellites: %d",
-                     gps.location.lat(), gps.location.lng(), gps.satellites.value());
-            serialPrintln(gpsMsg);
+            // char gpsMsg[100];
+            // snprintf(gpsMsg, sizeof(gpsMsg), "GPS - Lat: %.6f, Lng: %.6f, Satellites: %d",
+            //          gps.location.lat(), gps.location.lng(), gps.satellites.value());
+            // serialPrintln(gpsMsg);
         }
     }
 
