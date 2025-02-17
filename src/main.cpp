@@ -39,6 +39,7 @@ struct FlowHistory
 };
 FlowHistory flowHistory;
 void logGPSDataFlow(float flow);
+float flowA, flowB, flowC = 0.00;
 
 // Global Objects
 WebServer server(80);
@@ -50,6 +51,10 @@ void checkPressureAndLog();
 void handlePressure();
 void handleTimeTemp();
 void saveConfig();
+void handleDownloadGPSLog();
+void handleDeleteGPSLog();
+void handleDownloadGPSTrack();
+void handleDeleteGPSTrack();
 
 // Optimized circular buffer for serial messages
 struct LogMessage
@@ -63,13 +68,15 @@ int serialBufferIndex = 0;
 int totalMessages = 0;
 
 // Update Config structure to use percentage threshold
-struct Config {
+struct Config
+{
     char ssid[32] = "Aspol Tracker";
     char password[32] = "sulungresearch";
     char deviceName[32] = "PressureTracker";
     char currentSensor[10] = "BMP";  // Default to BMP
-    float pressureThreshold = 0.2;  // Default 0.2%
+    float pressureThreshold = 0.2;   // Default 0.2%
     float flowThreshold = 20.0;      // Default 20%
+    uint32_t trackLogInterval = 300; // Add this line
 };
 
 void IRAM_ATTR pulseCounter()
@@ -145,49 +152,60 @@ void initRTC()
     }
 }
 
-void initBMP() {
+void initBMP()
+{
     int retryCount = 0;
-    while (!bmp.begin() && retryCount < 5) {
+    while (!bmp.begin() && retryCount < 5)
+    {
         serialPrintln("BMP180 not found, retrying...");
         delay(500);
         retryCount++;
     }
-    if (!bmp.begin()) {
+    if (!bmp.begin())
+    {
         serialPrintln("BMP180 initialization failed");
         bmpInitialized = false;
-    } else {
+    }
+    else
+    {
         bmpInitialized = true;
         serialPrintln("BMP180 initialized successfully");
     }
 }
 
-void initSDCard() {
-    if (!SD.begin(SD_CS_PIN)) {
+void initSDCard()
+{
+    if (!SD.begin(SD_CS_PIN))
+    {
         serialPrintln("SD Card Mount Failed");
         sdCardAvailable = false;
         return;
     }
 
     sdCardAvailable = true;
-    
+
     // Create config file if it doesn't exist
-    if (!SD.exists("/config.txt")) {
+    if (!SD.exists("/config.txt"))
+    {
         serialPrintln("Creating new config file");
-        saveConfig();  // Save default configuration
+        saveConfig(); // Save default configuration
     }
-    
+
     loadConfig();
     serialPrintln("SD Card initialized successfully");
 }
 
-void loadConfig() {
-    if (!SD.exists("/config.txt")) {
+void loadConfig()
+{
+    if (!SD.exists("/config.txt"))
+    {
         serialPrintln("No config file found, using defaults");
         return;
     }
 
     File configFile = SD.open("/config.txt", FILE_READ);
-    if (!configFile) {
+    if (!configFile)
+    {
         serialPrintln("Failed to open config file");
         return;
     }
@@ -201,7 +219,8 @@ void loadConfig() {
     float flowThreshold = configFile.parseFloat();
 
     // Clear any remaining newline characters
-    while (configFile.available()) configFile.read();
+    while (configFile.available())
+        configFile.read();
 
     // Apply loaded values
     ssid.trim();
@@ -213,17 +232,24 @@ void loadConfig() {
     password.toCharArray(currentConfig.password, sizeof(currentConfig.password));
     deviceName.toCharArray(currentConfig.deviceName, sizeof(currentConfig.deviceName));
     currentSensor.toCharArray(currentConfig.currentSensor, sizeof(currentConfig.currentSensor));
-    
-    if (pressureThreshold > 0) currentConfig.pressureThreshold = pressureThreshold;
-    if (flowThreshold > 0) currentConfig.flowThreshold = flowThreshold;
+    currentConfig.trackLogInterval = configFile.parseInt();
+
+    if (currentConfig.trackLogInterval == 0)
+        currentConfig.trackLogInterval = 300;
+    if (pressureThreshold > 0)
+        currentConfig.pressureThreshold = pressureThreshold;
+    if (flowThreshold > 0)
+        currentConfig.flowThreshold = flowThreshold;
 
     configFile.close();
     serialPrintln("Configuration loaded from SD card");
 }
 
-void saveConfig() {
+void saveConfig()
+{
     File configFile = SD.open("/config.txt", FILE_WRITE);
-    if (!configFile) {
+    if (!configFile)
+    {
         serialPrintln("Failed to open config file for writing");
         return;
     }
@@ -234,7 +260,8 @@ void saveConfig() {
     configFile.println(currentConfig.currentSensor);
     configFile.println(currentConfig.pressureThreshold);
     configFile.println(currentConfig.flowThreshold);
-    
+    configFile.println(currentConfig.trackLogInterval);
+
     configFile.close();
     serialPrintln("Configuration saved to SD card");
 }
@@ -246,6 +273,27 @@ void setupWiFi()
     char ipMsg[50];
     snprintf(ipMsg, sizeof(ipMsg), "AP IP address: %d.%d.%d.%d", IP[0], IP[1], IP[2], IP[3]);
     serialPrintln(ipMsg);
+}
+
+void logGPSTrackData()
+{
+    if (!sdCardAvailable || !gps.location.isValid())
+        return;
+
+    DateTime now = rtc.now();
+    bool newFile = !SD.exists("/gps_track.csv");
+    File file = SD.open("/gps_track.csv", FILE_APPEND);
+    if (file) {
+        if (newFile) {
+            file.println("Date,Time,Latitude,Longitude,Satellites");
+        }
+        file.printf("%02d/%02d/%04d,%02d:%02d:%02d,%.6f,%.6f,%d\n",
+                    now.day(), now.month(), now.year(),
+                    now.hour(), now.minute(), now.second(),
+                    gps.location.lat(), gps.location.lng(),
+                    gps.satellites.value());
+        file.close();
+    }
 }
 
 // Web handlers
@@ -339,26 +387,29 @@ void handleDelete()
     }
 }
 
-void handleConfig() {
-    if (server.method() == HTTP_POST) {
+void handleConfig()
+{
+    if (server.method() == HTTP_POST)
+    {
         // Handle sensor configuration
-        server.arg("sensorType").toCharArray(currentConfig.currentSensor, 
-            sizeof(currentConfig.currentSensor));
-        
+        server.arg("sensorType").toCharArray(currentConfig.currentSensor, sizeof(currentConfig.currentSensor));
+
         currentConfig.pressureThreshold = server.arg("pressureThreshold").toFloat();
         currentConfig.flowThreshold = server.arg("flowThreshold").toFloat();
-        
+        currentConfig.trackLogInterval = server.arg("trackLogInterval").toInt();
+
         // Handle other parameters
         strncpy(currentConfig.ssid, server.arg("ssid").c_str(), sizeof(currentConfig.ssid));
-        if (server.arg("password").length() > 0) {
-            strncpy(currentConfig.password, server.arg("password").c_str(), 
-                sizeof(currentConfig.password));
+        if (server.arg("password").length() > 0)
+        {
+            strncpy(currentConfig.password, server.arg("password").c_str(),
+                    sizeof(currentConfig.password));
         }
-        strncpy(currentConfig.deviceName, server.arg("deviceName").c_str(), 
-            sizeof(currentConfig.deviceName));
+        strncpy(currentConfig.deviceName, server.arg("deviceName").c_str(),
+                sizeof(currentConfig.deviceName));
 
-        saveConfig();  // Save to SD card
-        setupWiFi();   // Restart AP with new config
+        saveConfig(); // Save to SD card
+        setupWiFi();  // Restart AP with new config
 
         server.sendHeader("Location", "/");
         server.send(303);
@@ -529,28 +580,47 @@ void handleRoot()
     html += "<h2>Device Status</h2><table>";
 
     // Time Status
-    if (rtcInitialized) {
+    if (rtcInitialized)
+    {
         html += "<tr><th>Current Time</th><td><span id='time'>Loading...</span></td></tr>";
-    } else {
+    }
+    else
+    {
         html += "<tr><th>Time</th><td>RTC Not Initialized</td></tr>";
     }
 
     // Temperature Status
-    if (bmpInitialized) {
+    if (bmpInitialized)
+    {
         html += "<tr><th>Temperature</th><td><span id='temperature'>Loading...</span></td></tr>";
-    } else {
+    }
+    else
+    {
         html += "<tr><th>Temperature</th><td>BMP Not Initialized</td></tr>";
     }
 
     // GPS Status
     char gpsMsgWeb[100];
     html += "<tr><th>GPS Status</th><td>";
-    if (gps.location.isValid()) {
-        html +=html += "LAT: "+String(gps.location.lat(),6) + "| LNG:"+ String(gps.location.lng(),6)+ "| SAT:" + String(gps.satellites.value());
-    }else{
+    if (gps.location.isValid())
+    {
+        html += html += "LAT: " + String(gps.location.lat(), 6) + "| LNG:" + String(gps.location.lng(), 6) + "| SAT:" + String(gps.satellites.value());
+    }
+    else
+    {
         html += "No Valid GPS Data";
     }
     html += "</td></tr></table></div>";
+
+    html += "<div class='status-card'>";
+    html += "<h2>GPS Log Management</h2>";
+    html += "<p>Main Log: ";
+    html += "<a href='/download_gps_log'><button>Download</button></a> ";
+    html += "<a href='/delete_gps_log' onclick='return confirm(\"Delete main GPS log?\")'><button>Delete</button></a>";
+    html += "</p><p>Track Log: ";
+    html += "<a href='/download_gps_track'><button>Download</button></a> ";
+    html += "<a href='/delete_gps_track' onclick='return confirm(\"Delete GPS track log?\")'><button>Delete</button></a>";
+    html += "</p></div>";
 
     // Serial Monitor Section
     html += "<div class='status-card'>";
@@ -587,6 +657,7 @@ void handleRoot()
     html += "<tr><th>SSID</th><td><input type='text' name='ssid' value='" + String(currentConfig.ssid) + "'></td></tr>";
     html += "<tr><th>Password</th><td><input type='password' name='password' placeholder='Enter new password'></td></tr>";
     html += "<tr><th>Device Name</th><td><input type='text' name='deviceName' value='" + String(currentConfig.deviceName) + "'></td></tr>";
+    html += "<tr><th>Track Log Interval (sec)</th><td><input type='number' name='trackLogInterval' value='" + String(currentConfig.trackLogInterval) + "'></td></tr>";
     html += "<tr><td colspan='2'><input type='submit' value='Save Configuration'></td></tr></table>";
     html += "</form></div>";
 
@@ -602,9 +673,12 @@ void logGPSData(float pressure)
 
     DateTime now = rtc.now();
 
-    File logFile = SD.open("/gps_log.txt", FILE_APPEND);
-    if (logFile)
-    {
+    bool newFile = !SD.exists("/flow_log.csv");
+    File logFile = SD.open("/flow_log.csv", FILE_APPEND);
+    if (logFile) {
+        if (newFile) {
+            logFile.println("DateTime,Latitude,Longitude,Pressure");
+        }
         char logEntry[100];
         snprintf(logEntry, sizeof(logEntry), "%02d/%02d/%04d %02d:%02d:%02d,%.6f,%.6f,%.2f\n",
                  now.day(), now.month(), now.year(),
@@ -651,6 +725,9 @@ void addFlowReading(float flow)
     flowHistory.index = (flowHistory.index + 1) % PRESSURE_HISTORY_SIZE;
     if (flowHistory.count < PRESSURE_HISTORY_SIZE)
         flowHistory.count++;
+    flowC = flowB;
+    flowB = flowA;
+    flowA = flow;
 }
 
 float calculateAverageFlow()
@@ -669,11 +746,13 @@ void checkFlowAndLog()
     unsigned long currentTime = millis();
     unsigned long timeDiff = currentTime - lastCheckTime;
     unsigned long test1 = 100;
-    
+
     // Add guard clause for time difference
-    if (timeDiff == 0) return;
-    
-    if (timeDiff >= 1000) {
+    if (timeDiff == 0)
+        return;
+
+    if (timeDiff >= 1000)
+    {
         detachInterrupt(digitalPinToInterrupt(FLOW_SENSOR_PIN));
         flowRate = (pulseCount / calibrationFactor) * (1000.0 / max(timeDiff, test1));
         pulseCount = 0;
@@ -683,13 +762,13 @@ void checkFlowAndLog()
         addFlowReading(flowRate);
     }
     float averageFlow = calculateAverageFlow();
-    float threshold = averageFlow * (1.0 + (currentConfig.flowThreshold/100.0));
+    float threshold = averageFlow * (1.0 + (currentConfig.flowThreshold / 100.0));
 
-    if (flowRate > threshold && millis() - lastLogTime > 2500 && flowRate > threshold)
+    if (flowRate > 12 && millis() - lastLogTime > 1500 && flowA <= flowB && flowB >= flowC)
     {
         lastLogTime = millis();
         char msg[100];
-        snprintf(msg, sizeof(msg), "Flow rate: %.2f L/min (Avg: %.2f/T: %.2f)", flowRate, averageFlow,threshold);
+        snprintf(msg, sizeof(msg), "Flow rate: %.2f L/min (Avg: %.2f/T: %.2f)", flowRate, averageFlow, threshold);
         serialPrintln(msg);
         logGPSDataFlow(flowRate);
     }
@@ -700,7 +779,7 @@ void logGPSDataFlow(float flow)
     if (!sdCardAvailable || !gps.location.isValid())
         return;
     DateTime now = rtc.now();
-    File file = SD.open("/flow_log.txt", FILE_APPEND);
+    File file = SD.open("/flow_log.csv", FILE_APPEND);
     if (file)
     {
         file.printf("%02d/%02d/%04d,%02d:%02d:%02d,%.6f,%.6f,%.2f\n",
@@ -736,32 +815,105 @@ void setup()
     server.on("/download", handleDownload);
     server.on("/delete", handleDelete);
     server.on("/timeTemp", handleTimeTemp);
+    server.on("/download_gps_log", handleDownloadGPSLog);
+    server.on("/delete_gps_log", handleDeleteGPSLog);
+    server.on("/download_gps_track", handleDownloadGPSTrack);
+    server.on("/delete_gps_track", handleDeleteGPSTrack);
     server.begin();
     serialPrintln("Web server started");
 }
 
 // Add new handler for real-time pressure data
-void handlePressure() {
+void handlePressure()
+{
     String json;
-    if (strcmp(currentConfig.currentSensor, "BMP") == 0) {
-        if (!bmpInitialized) {
+    if (strcmp(currentConfig.currentSensor, "BMP") == 0)
+    {
+        if (!bmpInitialized)
+        {
             server.send(500, "application/json", "{\"error\":\"BMP sensor not initialized\"}");
             return;
         }
         // BMP pressure handling
-    } else {
+    }
+    else
+    {
         // Flow sensor handling
-        if (flowRate == INFINITY) {  // Handle potential invalid values
+        if (flowRate == INFINITY)
+        { // Handle potential invalid values
             server.send(500, "application/json", "{\"error\":\"Invalid flow reading\"}");
             return;
         }
     }
     server.send(200, "application/json", json);
 }
+// Add these handlers in your code
+void handleDownloadGPSLog() {
+    if (SD.exists("/flow_log.csv")) {
+        File file = SD.open("/flow_log.csv", FILE_READ);
+        if (file) {
+            server.sendHeader("Content-Type", "text/csv");
+            server.sendHeader("Content-Disposition", "attachment; filename=gps_log.csv");
+            server.streamFile(file, "text/csv");
+            file.close();
+        } else {
+            server.send(500, "text/plain", "Error reading GPS log");
+        }
+    } else {
+        server.send(404, "text/plain", "GPS log not found");
+    }
+}
+
+void handleDeleteGPSLog() {
+    if (SD.remove("/flow_log.csv")) {
+        File file = SD.open("/flow_log.csv", FILE_WRITE);
+        if (file) {
+            file.println("DateTime,Latitude,Longitude,Pressure");
+            file.close();
+            server.send(200, "text/plain", "GPS log reset successfully");
+        } else {
+            server.send(500, "text/plain", "Error creating new GPS log");
+        }
+    } else {
+        server.send(500, "text/plain", "Failed to delete GPS log");
+    }
+}
+
+void handleDownloadGPSTrack() {
+    if (SD.exists("/gps_track.csv")) {
+        File file = SD.open("/gps_track.csv", FILE_READ);
+        if (file) {
+            server.sendHeader("Content-Type", "text/csv");
+            server.sendHeader("Content-Disposition", "attachment; filename=gps_track.csv");
+            server.streamFile(file, "text/csv");
+            file.close();
+        } else {
+            server.send(500, "text/plain", "Error reading track log");
+        }
+    } else {
+        server.send(404, "text/plain", "Track log not found");
+    }
+}
+
+void handleDeleteGPSTrack() {
+    if (SD.remove("/gps_track.csv")) {
+        File file = SD.open("/gps_track.csv", FILE_WRITE);
+        if (file) {
+            file.println("Date,Time,Latitude,Longitude,Satellites");
+            file.close();
+            server.send(200, "text/plain", "Track log reset successfully");
+        } else {
+            server.send(500, "text/plain", "Error creating new track log");
+        }
+    } else {
+        server.send(500, "text/plain", "Failed to delete track log");
+    }
+}
 
 void checkPressureAndLog()
 {
-    if (!bmpInitialized) {
+    if (!bmpInitialized)
+    {
         serialPrintln("BMP sensor not initialized");
         return;
     }
@@ -798,11 +950,12 @@ void handleTimeTemp()
         String json = "{";
         json += "\"time\":\"" + String(now.timestamp(DateTime::TIMESTAMP_TIME)) + "\",";
         float temperature = 0.00;
-        if (bmpInitialized){
+        if (bmpInitialized)
+        {
             temperature = bmp.readTemperature();
         }
         json += "\"temperature\":" + String(temperature, 2);
-        
+
         json += "}";
 
         server.send(200, "application/json", json);
@@ -815,15 +968,26 @@ void handleTimeTemp()
 
 void loop()
 {
+    static unsigned long lastTrackLog = 0;
+    if (millis() - lastTrackLog >= currentConfig.trackLogInterval * 1000)
+    {
+        logGPSTrackData();
+        lastTrackLog = millis();
+    }
+
     static unsigned long lastStatusUpdate = 0;
     const unsigned long STATUS_UPDATE_INTERVAL = 10000; // 10 seconds
 
     server.handleClient();
     processGPS();
 
-    if (strcmp(currentConfig.currentSensor, "BMP") == 0) {
-        if (bmpInitialized) checkPressureAndLog();
-    } else {
+    if (strcmp(currentConfig.currentSensor, "BMP") == 0)
+    {
+        if (bmpInitialized)
+            checkPressureAndLog();
+    }
+    else
+    {
         checkFlowAndLog();
     }
 
