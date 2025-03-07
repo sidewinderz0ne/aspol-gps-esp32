@@ -15,6 +15,8 @@
 
 // Add circular buffer for pressure readings
 #define PRESSURE_HISTORY_SIZE 10
+// Add this to your pin definitions section (around line 10)
+#define POWER_LED_PIN 4  // Power indicator LED
 struct PressureHistory
 {
     float readings[PRESSURE_HISTORY_SIZE];
@@ -821,6 +823,9 @@ void setup()
     server.on("/delete_gps_track", handleDeleteGPSTrack);
     server.begin();
     serialPrintln("Web server started");
+
+    pinMode(POWER_LED_PIN, OUTPUT);
+    digitalWrite(POWER_LED_PIN, HIGH);  // Turn on power indicator
 }
 
 // Add new handler for real-time pressure data
