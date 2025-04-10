@@ -13,6 +13,9 @@
 #define SD_CS_PIN 5
 #define SERIAL_BUFFER_SIZE 100 // Reduced buffer size
 
+#define POWER_LED_PIN 4  // Power indicator LED
+#define BUZZER_PIN 27  // Buzzer for GPS alerts
+
 // Add circular buffer for pressure readings
 #define PRESSURE_HISTORY_SIZE 10
 // Add this to your pin definitions section (around line 10)
@@ -702,6 +705,10 @@ void logGPSData(float pressure)
 
 void processGPS()
 {
+    static unsigned long lastBuzzerToggle = 0;
+    static bool buzzerState = false;
+    static bool gpsWasLocked = false;
+    
     while (neo6m.available() > 0)
     {
         if (gps.encode(neo6m.read()))
@@ -714,10 +721,40 @@ void processGPS()
             }
         }
     }
+    
+    // Check GPS lock status
+    bool gpsCurrentlyLocked = gps.location.isValid() && gps.satellites.value() >= 3;
+    
+    // If GPS status changed from locked to not locked, log it
+    if (gpsWasLocked && !gpsCurrentlyLocked) {
+        serialPrintln("GPS lock lost");
+    } else if (!gpsWasLocked && gpsCurrentlyLocked) {
+        serialPrintln("GPS lock acquired");
+        digitalWrite(BUZZER_PIN, LOW); // Turn off buzzer when lock is acquired
+    }
+    
+    // Update previous GPS status
+    gpsWasLocked = gpsCurrentlyLocked;
+    
+    // Beep the buzzer if no GPS lock or not enough satellites
+    if (!gpsCurrentlyLocked) {
+        // Toggle buzzer every 1 second for alert pattern
+        if (millis() - lastBuzzerToggle >= 1000) {
+            buzzerState = !buzzerState;
+            digitalWrite(BUZZER_PIN, buzzerState);
+            lastBuzzerToggle = millis();
+        }
+    }
 
     if (millis() > 5000 && gps.charsProcessed() < 10)
     {
         serialPrintln("No GPS detected");
+        // Continuous buzz for no GPS module detected (different pattern)
+        if (millis() - lastBuzzerToggle >= 500) {
+            buzzerState = !buzzerState;
+            digitalWrite(BUZZER_PIN, buzzerState);
+            lastBuzzerToggle = millis();
+        }
     }
 }
 
@@ -826,6 +863,9 @@ void setup()
 
     pinMode(POWER_LED_PIN, OUTPUT);
     digitalWrite(POWER_LED_PIN, HIGH);  // Turn on power indicator
+
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW);  // Initialize buzzer as off
 }
 
 // Add new handler for real-time pressure data
